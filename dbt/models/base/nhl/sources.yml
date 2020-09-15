@@ -77,5 +77,15 @@ sources:
         - name: player_stats_goalieStats_powerPlaySavePercentage 
         - name: player_stats_goalieStats_evenStrengthSavePercentage 
         - name: player_stats_goalieStats_shortHandedSavePercentage 
-
+    - name: job_stats
+      description: Job run stats
+      columns:
+        - name: id
+        - name: app_version
+        - name: execution_date
+        - name: execution_epoch
+        - name: query_start_date
+        - name: query_stop_date
+        - name: was_successful
+        - name: exception
 

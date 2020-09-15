@@ -1,127 +1,77 @@
-'''
-	This is the NHL crawler.  
-
-Scattered throughout are TODO tips on what to look for.
-
-Assume this job isn't expanding in scope, but pretend it will be pushed into production to run 
-automomously.  So feel free to add anywhere (not hinted, this is where we see your though process..)
-    * error handling where you see things going wrong.  
-    * messaging for monitoring or troubleshooting
-    * anything else you think is necessary to have for restful nights
-'''
 import logging
-from pathlib import Path
-from datetime import datetime
-from dataclasses import dataclass
+import os
+import uuid
+from dataclasses import asdict
+from datetime import datetime, timedelta
+
 import boto3
-import requests
-import pandas as pd
+import click
 from botocore.config import Config
-from dateutil.parser import parse as dateparse
 
-logging.basicConfig(level=logging.INFO)
-LOG = logging.getLogger(__name__)
+from nhldata import __version__
+from nhldata.metadata import JobMetadata
+from nhldata.nhl import AdapterFactory
+from nhldata.storage import Storage
 
-class NHLApi:
-    SCHEMA_HOST = "https://statsapi.web.nhl.com/"
-    VERSION_PREFIX = "api/v1"
-
-    def __init__(self, base=None):
-        self.base = base if base else f'{self.SCHEMA_HOST}/{self.VERSION_PREFIX}'
+LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+API_FACTORY = AdapterFactory()
+DATE_FORMATS = ['%Y-%m-%d']
 
 
-    def schedule(self, start_date: datetime, end_date: datetime) -> dict:
-        ''' 
-        returns a dict tree structure that is like
-            "dates": [ 
-                {
-                    " #.. meta info, one for each requested date ",
-                    "games": [
-                        { #.. game info },
-                        ...
-                    ]
-                },
-                ...
-            ]
-        '''
-        return self._get(self._url('schedule'), {'startDate': start_date.strftime('%Y-%m-%d'), 'endDate': end_date.strftime('%Y-%m-%d')})
+def splash(debug: bool):
+    click.echo('\nNHLData v%s' % __version__)
+    click.echo('NHLData log level is %s and higher\n' % ('DEBUG' if debug else 'INFO'))
 
-    def boxscore(self, game_id):
-        '''
-        returns a dict tree structure that is like
-           "teams": {
-                "home": {
-                    " #.. other meta ",
-                    "players": {
-                        $player_id: {
-                            #... player info
-                        },
-                        #...
-                    }
-                },
-                "away": {
-                    #... same as "home" 
-                }
-            }
-        '''
-        url = self._url(f'game/{game_id}/boxscore')
-        return self._get(url)
 
-    def _get(self, url, params=None):
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
+@click.group()
+@click.option('--debug/--no-debug', default=False)
+def main(debug):
+    if debug:
+        logging.basicConfig(format=LOG_FORMAT, level=logging.DEBUG)
+    else:
+        logging.basicConfig(format=LOG_FORMAT, level=logging.INFO)
+    splash(debug)
 
-    def _url(self, path):
-        return f'{self.base}/{path}'
 
-@dataclass
-class StorageKey:
-    # TODO what propertie are needed to partition?
-    gameid: str
-
-    def key(self):
-        ''' renders the s3 key for the given set of properties '''
-        # TODO use the properties to return the s3 key
-        return f'{self.gameid}.csv'
-
-class Storage():
-    def __init__(self, dest_bucket, s3_client):
-        self._s3_client = s3_client
-        self.bucket = dest_bucket
-
-    def store_game(self, key: StorageKey, game_data) -> bool:
-        self._s3_client.put_object(Bucket=self.bucket, Key=key.key(), Body=game_data)
-        return True
-
-class Crawler():
-    def __init__(self, api: NHLApi, storage: Storage):
-        self.api = api
-        self.storage = storage
-
-    def crawl(self, startDate: datetime, endDate: datetime) -> None:
-	# NOTE the data direct from the API is not quite what we want. Its nested in a way we don't want
-	#      so here we are looking for your ability to gently massage a data set. 
-        #TODO error handling
-        #TODO get games for dates
-        #TODO for each game get all player stats: schedule -> date -> teams.[home|away] -> $playerId: wanted_data
-        #TODO output to S3 should be a csv that matches the schema of utils/create_games_stats 
-                 
-def main():
-    import os
-    import argparse
-    parser = argparse.ArgumentParser(description='NHL Stats crawler')
-    # TODO what arguments are needed to make this thing run,  if any?
-    args = parser.parse_args()
-
-    dest_bucket = os.environ.get('DEST_BUCKET', 'output')
-    startDate = # TODO get this however but should be like datetime(2020,8,4)
-    endDate =   # TODO get this however but should be like datetime(2020,8,5)
-    api = NHLApi()
-    s3client = boto3.client('s3', config=Config(signature_version='s3v4'), endpoint_url=os.environ.get('S3_ENDPOINT_URL'))
-    storage = Storage(dest_bucket, s3client)
-    crawler = Crawler(api, storage)
-    crawler.crawl(startDate, endDate)
-
-if __name__ == '__main__':
-    main()
+@main.command()
+@click.option('--api-version', type=click.Choice(API_FACTORY.all_versions(), case_sensitive=False), default='v1',
+              help="NHL statsapi version to target", show_default=True)
+@click.option('--from-date', type=click.DateTime(formats=DATE_FORMATS),
+              default=(datetime.now() - timedelta(days=1)).strftime(DATE_FORMATS[0]),
+              help="Start date of retrieval window", show_default=True)
+@click.option('--to-date', type=click.DateTime(formats=DATE_FORMATS),
+              default=datetime.now().strftime((DATE_FORMATS[0])),
+              help="End date of retrieval window", show_default=True)
+def games(api_version, from_date, to_date):
+    meta = JobMetadata(
+        id=str(uuid.uuid4()),
+        app_version=__version__,
+        execution_date=datetime.utcnow().strftime("%Y/%m/%d"),
+        execution_ts=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f%z"),
+        query_start_date=from_date.strftime(DATE_FORMATS[0]),
+        query_stop_date=to_date.strftime(DATE_FORMATS[0]),
+        job_successful='True',
+        job_exception=''
+    )
+    bucket = os.environ.get('DEST_BUCKET', 'output')
+    jobs = os.environ.get('JOB_BUCKET', 'jobs')
+    s3client = boto3.client('s3', config=Config(signature_version='s3v4'),
+                            endpoint_url=os.environ.get('S3_ENDPOINT_URL'))
+    storage = Storage(bucket, jobs, s3client)
+    try:
+        api_adapters = API_FACTORY.adapter_for_version(api_version)
+        api = api_adapters.api()
+        crawler = api_adapters.crawler(api, storage)
+        crawler.crawl(from_date, to_date)
+    except Exception as e:
+        click.echo('JOB RUN FAILED')
+        click.echo(e)
+        # if it blows up, update the meta object
+        meta.job_successful = 'False'
+        meta.job_exception = e.__repr__().replace(',', ' ')
+    finally:
+        meta_keys = ','.join(asdict(meta).keys())
+        meta_values = ','.join(asdict(meta).values())
+        storage_key = f'{meta.execution_date}/{meta.id}.csv'
+        csv_string = f'{meta_keys}\n{meta_values}'
+        storage.store_job(storage_key, csv_string)

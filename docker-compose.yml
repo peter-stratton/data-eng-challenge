@@ -31,4 +31,5 @@ services:
       AWS_SECRET_ACCESS_KEY: secretkey
       AWS_DEFAULT_REGION: us-east-1
       DEST_BUCKET: data-bucket
+      JOB_BUCKET: job-bucket
 

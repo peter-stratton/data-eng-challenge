@@ -7,7 +7,7 @@ models:
         description: unique id for identifying player
         tests:
           - not_null
-          - unique
+          - unique_for_team
       - name: full_name
         description: Full player name
         tests:
