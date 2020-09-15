@@ -83,9 +83,9 @@ sources:
         - name: id
         - name: app_version
         - name: execution_date
-        - name: execution_epoch
+        - name: execution_ts
         - name: query_start_date
         - name: query_stop_date
-        - name: was_successful
-        - name: exception
+        - name: job_successful
+        - name: job_exception
 
